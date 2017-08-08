@@ -1,3 +1,15 @@
+Modified SCRecorder
+=======================
+
+Based on the excellent SCRecorder project, I had a couple of needs which I needed to modify the code for:
+- Stability and recovery for recording long videos (approximately 2 hours)
+- Ability to stop and start recording of video and audio while losing a minimum number of frames
+- Remove audible click when combining consecutive segments
+- Ensure current segment is saved out to file when application goes into the background, or is terminated
+
+There is still some tidying up of the code that I'd like to do. This includes specifying a dispatch queue for the SCRecorderDelegate to be called on - I have patched the method calls I needed, but should generalize and fall back to a default queue which is the same as the original code.
+
+
 SCRecorder
 ===============
 
@@ -27,14 +39,6 @@ Framework needed:
 - AudioToolbox
 - GLKit
 
-Podfile
-----------------
-
-If you are using cocoapods, you can use this project with the following Podfile
-
-```ruby
-platform :ios, '7.0'
-pod 'SCRecorder'
 ```
 
 Manual install
