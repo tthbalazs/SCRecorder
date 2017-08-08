@@ -195,7 +195,9 @@
 }
 - (void) handleStopButtonTapped:(id)sender {
     [_recorder pause:^{
-        [self saveAndShowSession:_recorder.session];
+        dispatch_async( dispatch_get_main_queue(), ^{
+            [self saveAndShowSession:_recorder.session];
+        } );
     }];
 }
 
