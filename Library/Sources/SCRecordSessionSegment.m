@@ -9,10 +9,13 @@
 #import "SCRecordSessionSegment.h"
 #import "SCRecordSession.h"
 
+extern NSString * const SCRecordSessionSegmentDurationKey;
+
 @interface SCRecordSessionSegment() {
     AVAsset *_asset;
     __weak UIImage *_thumbnail;
     __weak UIImage *_lastImage;
+    CMTime _duration;
 }
 
 @end
@@ -37,6 +40,13 @@
     if (self) {
         _url = url;
         _info = info;
+        NSObject* value = [info objectForKey:SCRecordSessionSegmentDurationKey];
+        if ( nil != value ) {
+            _duration = CMTimeMake( (int64_t)( [(NSNumber*)value doubleValue] * 10000 ), 10000 );
+        }
+        else {
+            _duration = kCMTimeInvalid;
+        }
     }
     
     return self;
@@ -58,7 +68,14 @@
 }
 
 - (CMTime)duration {
-    return [self asset].duration;
+    if ( NO == CMTIME_IS_VALID( _duration ) ) {
+        return [self asset].duration;
+    }
+    return _duration;
+}
+
+- (void)setDuration:(CMTime)time {
+    _duration = time;
 }
 
 - (UIImage *)thumbnail {

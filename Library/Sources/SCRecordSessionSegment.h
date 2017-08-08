@@ -25,7 +25,7 @@
 /**
  The duration of this segment
  */
-@property (readonly, nonatomic) CMTime duration;
+@property (readwrite, nonatomic) CMTime duration;
 
 /**
  The thumbnail that represents this segment

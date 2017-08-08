@@ -274,6 +274,12 @@
  */
 @property (readonly, nonatomic) dispatch_queue_t __nonnull sessionQueue;
 
+/** 
+ RGS Keep going in background when paused
+ */
+
+@property (readwrite, nonatomic) UIBackgroundTaskIdentifier pauseBackgroundTask;
+
 /**
  Create a recorder
  @return the newly created recorder

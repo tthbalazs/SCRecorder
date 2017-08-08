@@ -16,6 +16,7 @@ NSString * const SCRecordSessionSegmentFilenamesKey = @"RecordSegmentFilenames";
 NSString * const SCRecordSessionSegmentsKey = @"Segments";
 NSString * const SCRecordSessionSegmentFilenameKey = @"Filename";
 NSString * const SCRecordSessionSegmentInfoKey = @"Info";
+NSString * const SCRecordSessionSegmentDurationKey = @"SegmentDuration";
 
 NSString * const SCRecordSessionDurationKey = @"Duration";
 NSString * const SCRecordSessionIdentifierKey = @"Identifier";
@@ -307,6 +308,8 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         if (file != nil) {
             writer = [[AVAssetWriter alloc] initWithURL:file fileType:fileType error:&theError];
             writer.metadata = [SCRecorderTools assetWriterMetadata];
+            // RGS - Flush video out every 20 seconds so that if we get terminated we have time to save the remaining frames before we get killed
+            writer.movieFragmentInterval = CMTimeMake( 20, 1 );
         }
     } else {
         theError = [SCRecordSession createError:@"No fileType has been set in the SCRecordSession"];
@@ -339,6 +342,7 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
             //                _currentRecordDurationWithoutCurrentSegment = _currentRecordDuration;
             _recordSegmentReady = YES;
         } else {
+            NSLog( @"createWriter - failed to startWriting - %@", [writer.error localizedDescription] );
             theError = writer.error;
             writer = nil;
         }
@@ -372,6 +376,8 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         _videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings sourceFormatHint:formatDescription];
         _videoInput.expectsMediaDataInRealTime = YES;
         _videoInput.transform = _videoConfiguration.affineTransform;
+        // if _videoInput.expectsMediaDataInRealTime = YES then we can't set .performsMultiPassEncodingIfSupported to YES
+        //_videoInput.performsMultiPassEncodingIfSupported = YES;
         
         CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription);
         
@@ -464,6 +470,12 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     _currentSegmentHasAudio = NO;
     _currentSegmentHasVideo = NO;
     _assetWriter = nil;
+    
+    // RGS
+    _videoInput = nil;
+    _audioInput = nil;
+    // RGS
+    
     _lastTimeAudio = kCMTimeInvalid;
     _lastTimeVideo = kCMTimeInvalid;
     _currentSegmentDuration = kCMTimeZero;
@@ -482,24 +494,40 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         
         [self _destroyAssetWriter];
         
-        dispatch_async(dispatch_get_main_queue(), ^{
+//        dispatch_async(dispatch_get_main_queue(), ^{
             if (completionHandler != nil) {
                 completionHandler(segment, error);
             }
-        });
-    }];
+//        });
+    }]; 
 }
 
 - (BOOL)endSegmentWithInfo:(NSDictionary *)info completionHandler:(void(^)(SCRecordSessionSegment *segment, NSError* error))completionHandler {
     __block BOOL success = NO;
     
     [self dispatchSyncOnSessionQueue:^{
+        [_videoInput markAsFinished];
+        [_audioInput markAsFinished];
+        
+        __block AVAssetWriter *writer = _assetWriter;
+        __block BOOL writingToFile = NO;
+        __block CMTime segmentDuration = _currentSegmentDuration;    // kCMTimeInvalid;
+        //BOOL currentSegmentEmpty = (!_currentSegmentHasVideo && !_currentSegmentHasAudio);
+        
+//        if ( nil != writer && NO == currentSegmentEmpty /*&& YES == writingToFile*/ ) {
+//            NSMutableDictionary* durationInfo = [[NSMutableDictionary alloc] initWithDictionary:info];
+//            durationInfo[SCRecordSessionSegmentDurationKey] = [NSNumber numberWithDouble:CMTimeGetSeconds(segmentDuration)];
+//            [self appendRecordSegmentUrl:writer.outputURL info:durationInfo error:writer.error completionHandler:^(SCRecordSessionSegment *segment, NSError *error) {
+//                if (completionHandler != nil) {
+//                    completionHandler( segment, error );
+//                }
+//            }];
+//        }
+        
         dispatch_sync(_audioQueue, ^{
             if (_recordSegmentReady) {
                 _recordSegmentReady = NO;
                 success = YES;
-                
-                AVAssetWriter *writer = _assetWriter;
                 
                 if (writer != nil) {
                     BOOL currentSegmentEmpty = (!_currentSegmentHasVideo && !_currentSegmentHasAudio);
@@ -511,29 +539,70 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
                         [self removeFile:writer.outputURL];
                         
                         if (completionHandler != nil) {
-                            dispatch_async(dispatch_get_main_queue(), ^{
+                            //dispatch_async(dispatch_get_main_queue(), ^{
                                 completionHandler(nil, nil);
-                            });
+                           // });
                         }
                     } else {
                         //                NSLog(@"Ending session at %fs", CMTimeGetSeconds(_currentSegmentDuration));
-                        [writer endSessionAtSourceTime:CMTimeAdd(_currentSegmentDuration, _sessionStartTime)];
+                        //[writer endSessionAtSourceTime:CMTimeAdd(_currentSegmentDuration, _sessionStartTime)];
+                        segmentDuration = _currentSegmentDuration;
 
+                        writingToFile = YES;
+                        __block id<SCRecorderDelegate> delegate = self.recorder.delegate;
+                        
                         [writer finishWritingWithCompletionHandler: ^{
-                            [self appendRecordSegmentUrl:writer.outputURL info:info error:writer.error completionHandler:completionHandler];
+                            dispatch_async( dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                if ( writer.status == AVAssetWriterStatusFailed ) {
+                                    NSLog( @"SCRecordSession.endSegmentWithInfo finishWritingWithCompletionHandler failed %@", writer.error.localizedDescription );
+                                }
+                                else {
+                                    SCRecordSessionSegment *segment = self.segments.lastObject;
+                                    segment.duration = kCMTimeInvalid;
+                                    if ([delegate respondsToSelector:@selector(recorder:didCompleteSegment:inSession:error:)]) {
+                                        [delegate recorder:self.recorder didCompleteSegment:segment inSession:self error:nil];
+                                    }
+                                }
+                                // Don't nil the writer (and delete it) until a while after
+                                dispatch_after( dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                    writer = nil;
+                                    delegate = nil;
+                                } );
+                                
+                                if ( UIBackgroundTaskInvalid != self.recorder.pauseBackgroundTask ) {
+                                    // RGS Try giving time for other things to clean up due to pause failing
+                                    __block UIBackgroundTaskIdentifier task = self.recorder.pauseBackgroundTask;
+                                    self.recorder.pauseBackgroundTask = UIBackgroundTaskInvalid;
+                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                        [[UIApplication sharedApplication] endBackgroundTask:task];
+                                    });
+                                }
+                            });
                         }];
                     }
                 } else {
+                    NSLog(@"endSegmentWithInfo is stopping the recording - no writer" );
                     [_movieFileOutput stopRecording];
                 }
             } else {
-                dispatch_async(dispatch_get_main_queue(), ^{
+                //dispatch_async(dispatch_get_main_queue(), ^{
                     if (completionHandler != nil) {
                         completionHandler(nil, [SCRecordSession createError:@"The current record segment is not ready for this operation"]);
                     }
-                });
+                //});
             }
         });
+        if ( nil != writer /*&& NO == currentSegmentEmpty*/ && YES == writingToFile ) {
+            //            dispatch_async( dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSMutableDictionary* durationInfo = [[NSMutableDictionary alloc] initWithDictionary:info];
+            durationInfo[SCRecordSessionSegmentDurationKey] = [NSNumber numberWithDouble:CMTimeGetSeconds(segmentDuration)];
+            [self appendRecordSegmentUrl:writer.outputURL info:durationInfo error:writer.error completionHandler:^(SCRecordSessionSegment *segment, NSError *error) {
+                if (completionHandler != nil) {
+                    completionHandler( segment, error );
+                }
+            }];
+            //            });
+        }
     }];
     
     return success;
@@ -734,14 +803,14 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         completion(NO);
     }
 }
-
+/*
 - (CMTime)_appendTrack:(AVAssetTrack *)track toCompositionTrack:(AVMutableCompositionTrack *)compositionTrack atTime:(CMTime)time withBounds:(CMTime)bounds {
     CMTimeRange timeRange = track.timeRange;
     time = CMTimeAdd(time, timeRange.start);
     
     if (CMTIME_IS_VALID(bounds)) {
         CMTime currentBounds = CMTimeAdd(time, timeRange.duration);
-
+        
         if (CMTIME_COMPARE_INLINE(currentBounds, >, bounds)) {
             timeRange = CMTimeRangeMake(timeRange.start, CMTimeSubtract(timeRange.duration, CMTimeSubtract(currentBounds, bounds)));
         }
@@ -750,14 +819,87 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     if (CMTIME_COMPARE_INLINE(timeRange.duration, >, kCMTimeZero)) {
         NSError *error = nil;
         [compositionTrack insertTimeRange:timeRange ofTrack:track atTime:time error:&error];
+        //        [compositionTrack ]
         
         if (error != nil) {
             NSLog(@"Failed to insert append %@ track: %@", compositionTrack.mediaType, error);
         } else {
-            //        NSLog(@"Inserted %@ at %fs (%fs -> %fs)", track.mediaType, CMTimeGetSeconds(time), CMTimeGetSeconds(timeRange.start), CMTimeGetSeconds(timeRange.duration));
+            NSLog(@"Inserted %@ at %fs (%fs -> %fs)", track.mediaType, CMTimeGetSeconds(time), CMTimeGetSeconds(timeRange.start), CMTimeGetSeconds(timeRange.duration));
         }
         
         return CMTimeAdd(time, timeRange.duration);
+    }
+    
+    return time;
+}
+*/
+
+- (BOOL)is64Bit {
+    if (sizeof(void*) == 4) {
+        return NO;
+    }
+    
+    return YES;
+}
+
+- (CMTime)_appendTrack:(AVAssetTrack *)track toCompositionTrack:(AVMutableCompositionTrack *)compositionTrack atTime:(CMTime)time withBounds:(CMTime)bounds {
+    CMTimeRange timeRange = track.timeRange;
+    time = CMTimeAdd(time, timeRange.start);
+    
+    CMTime scaledTime = kCMTimeInvalid;
+    if (CMTIME_IS_VALID(bounds)) {
+        CMTime currentBounds = CMTimeAdd(time, timeRange.duration);
+        
+        if (CMTIME_COMPARE_INLINE(currentBounds, >, bounds)) {
+            //timeRange = CMTimeRangeMake(timeRange.start, CMTimeSubtract(timeRange.duration, CMTimeSubtract(currentBounds, bounds)));
+            scaledTime = CMTimeSubtract(timeRange.duration, CMTimeSubtract(currentBounds, bounds));
+        }
+        else if (CMTIME_COMPARE_INLINE(currentBounds, <, bounds)) {
+            //timeRange = CMTimeRangeMake(timeRange.start, CMTimeSubtract(timeRange.duration, CMTimeSubtract(currentBounds, bounds)));
+            scaledTime = CMTimeAdd(timeRange.duration, CMTimeSubtract(bounds, currentBounds));
+        }
+    }
+    
+    // RGS TEST - my 32 bit iPad is failing of I do not do this, although an iPhone 5 (32 bit) was okay, so... where is the line drawn
+//    if ( YES ) {
+//    if ( NO == [self is64Bit] ) {
+//        scaledTime = kCMTimeInvalid;
+//    }
+    // RGS TEST
+    
+    if (CMTIME_COMPARE_INLINE(timeRange.duration, >, kCMTimeZero)) {
+        NSError *error = nil;
+        if ( YES == [compositionTrack insertTimeRange:timeRange ofTrack:track atTime:time error:&error] ) {
+            if (CMTIME_IS_VALID(scaledTime)) {
+                scaledTime = CMTimeConvertScale( scaledTime, track.naturalTimeScale, kCMTimeRoundingMethod_RoundTowardZero );
+                [compositionTrack scaleTimeRange:timeRange toDuration:scaledTime];
+                NSArray* segments = compositionTrack.segments;
+                if ( NO == [compositionTrack validateTrackSegments:segments error:&error] ) {
+                    // If scaling did not work, then remove the last segment and insert it without scaling again
+                    scaledTime = kCMTimeInvalid;
+                    NSLog(@"Failed to scale inserted %@ track: %@", compositionTrack.mediaType, error);
+
+                    NSMutableArray* modifiedSegments = [NSMutableArray arrayWithArray:segments];
+                    [modifiedSegments removeLastObject];
+                    compositionTrack.segments = modifiedSegments;
+                    error = nil;
+                    [compositionTrack insertTimeRange:timeRange ofTrack:track atTime:time error:&error];
+                }
+            }
+        }
+        
+        if (error != nil) {
+            NSLog(@"Failed to insert append %@ track: %@", compositionTrack.mediaType, error);
+        } else {
+//            NSLog(@"Inserted %@ at %fs (%fs -> %fs -> %f)", track.mediaType, CMTimeGetSeconds(time), CMTimeGetSeconds(timeRange.start), CMTimeGetSeconds(timeRange.duration), CMTimeGetSeconds(scaledTime));
+        }
+        
+        if (CMTIME_IS_VALID(scaledTime)) {
+            return CMTimeAdd(time, scaledTime);
+        }
+        else {
+            return CMTimeAdd(time, timeRange.duration);
+        }
     }
     
     return time;
@@ -781,6 +923,42 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
             NSArray *videoAssetTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
             
             CMTime maxBounds = kCMTimeInvalid;
+
+//            videoTrack = [videoAssetTracks firstObject];
+//            if ( nil != videoTrack ) {
+//                //maxBounds = videoTrack.timeRange.duration;
+//                
+//                audioTrack = [audioAssetTracks firstObject];
+//
+//                NSLog( @"appendSegmentsToComposition video %f audio %f", CMTimeGetSeconds(videoTrack.timeRange.duration), CMTimeGetSeconds(audioTrack.timeRange.duration) );
+//// Is the audio track shorter than the video track? If so, then that should be the maxBounds, we should be taalking about small amounts here, so it is to stop the 'pop' in the audio
+////                if ( nil != audioTrack && 1 == CMTimeCompare( maxBounds, audioTrack.timeRange.duration ) ) {
+////                    maxBounds = audioTrack.timeRange.duration;
+////                }
+//                
+//            }
+//            videoTrack = nil;
+//            audioTrack = nil;
+ 
+            
+            // TODO: RGS Try amd limit time to maximum of either the video or audio
+            
+            CMTime audioTime = currentTime;
+            for (AVAssetTrack *audioAssetTrack in audioAssetTracks) {
+                if (audioTrack == nil) {
+                    NSArray *audioTracks = [composition tracksWithMediaType:AVMediaTypeAudio];
+                    
+                    if (audioTracks.count > 0) {
+                        audioTrack = [audioTracks firstObject];
+                    } else {
+                        audioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
+                    }
+                }
+//                NSLog( @"appendSegmentsToComposition audioTime %f  -- maxBounds %f", CMTimeGetSeconds( audioTime ), CMTimeGetSeconds( maxBounds ) );
+                audioTime = [self _appendTrack:audioAssetTrack toCompositionTrack:audioTrack atTime:audioTime withBounds:maxBounds];
+                
+                maxBounds = audioTime;
+            }
             
             CMTime videoTime = currentTime;
             for (AVAssetTrack *videoAssetTrack in videoAssetTracks) {
@@ -795,23 +973,10 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
                     }
                 }
                 
+//                NSLog( @"appendSegmentsToComposition videoTime %f  -- maxBounds %f", CMTimeGetSeconds( videoTime ), CMTimeGetSeconds( maxBounds ) );
                 videoTime = [self _appendTrack:videoAssetTrack toCompositionTrack:videoTrack atTime:videoTime withBounds:maxBounds];
-                maxBounds = videoTime;
-            }
-            
-            CMTime audioTime = currentTime;
-            for (AVAssetTrack *audioAssetTrack in audioAssetTracks) {
-                if (audioTrack == nil) {
-                    NSArray *audioTracks = [composition tracksWithMediaType:AVMediaTypeAudio];
-                    
-                    if (audioTracks.count > 0) {
-                        audioTrack = [audioTracks firstObject];
-                    } else {
-                        audioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
-                    }
-                }
                 
-                audioTime = [self _appendTrack:audioAssetTrack toCompositionTrack:audioTrack atTime:audioTime withBounds:maxBounds];
+//                maxBounds = videoTime;
             }
             
             currentTime = composition.duration;

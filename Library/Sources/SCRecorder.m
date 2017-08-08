@@ -93,6 +93,8 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
         [_photoConfiguration addObserver:self forKeyPath:@"options" options:NSKeyValueObservingOptionNew context:SCRecorderPhotoOptionsContext];
         
         _context = [SCContext new].CIContext;
+        
+        _pauseBackgroundTask = UIBackgroundTaskInvalid;
     }
     
     return self;
@@ -477,6 +479,11 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
 - (void)pause:(void(^)())completionHandler {
     _isRecording = NO;
     
+    self.pauseBackgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
+        [[UIApplication sharedApplication] endBackgroundTask:self.pauseBackgroundTask];
+        self.pauseBackgroundTask = UIBackgroundTaskInvalid;
+    }];
+    
     void (^block)() = ^{
         SCRecordSession *recordSession = _session;
         
@@ -489,14 +496,15 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
                     if ([recordSession endSegmentWithInfo:info completionHandler:nil]) {
                         _pauseCompletionHandler = completionHandler;
                     } else {
-                        dispatch_handler(completionHandler);
+                        dispatch_async( dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), completionHandler );
+                        //dispatch_handler(completionHandler);
                     }
                 } else {
                     [recordSession endSegmentWithInfo:info completionHandler:^(SCRecordSessionSegment *segment, NSError *error) {
-                        id<SCRecorderDelegate> delegate = self.delegate;
-                        if ([delegate respondsToSelector:@selector(recorder:didCompleteSegment:inSession:error:)]) {
-                            [delegate recorder:self didCompleteSegment:segment inSession:recordSession error:error];
-                        }
+//                        id<SCRecorderDelegate> delegate = self.delegate;
+//                        if ([delegate respondsToSelector:@selector(recorder:didCompleteSegment:inSession:error:)]) {
+//                            [delegate recorder:self didCompleteSegment:segment inSession:recordSession error:error];
+//                        }
                         if (completionHandler != nil) {
                             completionHandler();
                         }
@@ -555,9 +563,9 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
             dispatch_async(_sessionQueue, ^{
                 [recordSession endSegmentWithInfo:[self _createSegmentInfo] completionHandler:^(SCRecordSessionSegment *segment, NSError *error) {
                     id<SCRecorderDelegate> delegate = self.delegate;
-                    if ([delegate respondsToSelector:@selector(recorder:didCompleteSegment:inSession:error:)]) {
-                        [delegate recorder:self didCompleteSegment:segment inSession:recordSession error:error];
-                    }
+//                    if ([delegate respondsToSelector:@selector(recorder:didCompleteSegment:inSession:error:)]) {
+//                        [delegate recorder:self didCompleteSegment:segment inSession:recordSession error:error];
+//                    }
                     
                     if ([delegate respondsToSelector:@selector(recorder:didCompleteSession:)]) {
                         [delegate recorder:self didCompleteSession:recordSession];
