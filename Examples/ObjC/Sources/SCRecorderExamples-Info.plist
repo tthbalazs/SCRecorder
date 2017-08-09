@@ -2,10 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This code can save videos to your Photo&apos;s library.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Want audio too?</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Well, it is  a camera app.</string>
+	<string>Well, it is a camera app.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
