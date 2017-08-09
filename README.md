@@ -9,6 +9,8 @@ Based on the excellent SCRecorder project, I had a couple of needs which I neede
 
 There is still some tidying up of the code that I'd like to do. This includes specifying a dispatch queue for the SCRecorderDelegate to be called on - I have patched the method calls I needed, but should generalize and fall back to a default queue which is the same as the original code.
 
+I have also added privacy fields to the .plist to stop the example app from crashing.
+
 
 SCRecorder
 ===============
